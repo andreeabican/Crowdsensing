@@ -6,9 +6,46 @@ Assignment 1
 March 2016
 """
 
-from threading import Event, Thread, Semaphore
+from threading import Event, Thread, Semaphore, Lock
 
+class ScriptThread(Thread):
+	
+	def __init__(self):
+		Thread.__init__(self)
+		
+	def update_data(neighbours, location, parent_device):
+		self.neighbours = neighbours
+		self.location = location
+		self.parent_device = parent_device
+		
+	def run(self):
+		self.parent_device.semaphore.acquire()
+		script_data = []
+		# collect data from current neighbours
+		for device in self.neighbours:
+			data = device.get_data(location)
+			if data is not None:
+				script_data.append(data)
+		# add our data, if any
+		data = self.parent_device.get_data(self.location)
+		if data is not None:
+			script_data.append(data)
 
+		if script_data != []:
+			print "Avem si date"
+			# run script on data
+			self.parent_device.script_run.set()
+			self.parent_device.script_run.wait()
+			result = script.run(script_data)
+			
+			# update data of neighbours, hope no one is updating at the same time
+			for device in self.neighbours:
+				parent_device.set_data(self.location, result)
+			# update our data, hope no one is updating at the same time
+			self.parent_device.set_data(slef.location, result)
+		self.parent_device.semaphore.release()
+		
+		
 class Device(object):
 	"""
 	Class that represents a device.
@@ -33,8 +70,11 @@ class Device(object):
 		
 		self.script_received = Event()
 		self.script_run = Event()
+		self.scriptThreads = [ScriptThread()]*8
 		self.timepoint_done = Event()
+		
 		self.semaphore = None
+		self.lock = Lock();
 		self.thread = DeviceThread(self)
 		self.thread.start()
 
@@ -55,11 +95,13 @@ class Device(object):
 		@param devices: list containing all devices
 		"""
 		# we don't need no stinkin' setup
+		self.script_received.set()
 		if self.device_id == 0:
 			self.semaphore = Semaphore(8)
 		else:
 			for device in devices:
 				device.semaphore = devices[0].semaphore
+
 		pass
 
 	def assign_script(self, script, location):
@@ -112,7 +154,6 @@ class Device(object):
 		"""
 		self.thread.join()
 
-
 class DeviceThread(Thread):
 	"""
 	Class that implements the device's worker thread.
@@ -131,11 +172,14 @@ class DeviceThread(Thread):
 		# hope there is only one timepoint, as multiple iterations of the loop are not supported
 		print("CIneva porneste devideThread")
 		while True:
-			# get the current neighbourhood
-			neighbours = self.device.supervisor.get_neighbours()
 		
+			# get the current neighbourhood
+			self.device.lock.acquire()
+			neighbours = self.device.supervisor.get_neighbours()
 			if neighbours is None:
 				break
+			self.device.lock.release()
+			
 			self.device.script_received.wait()
 
 			# run scripts received until now
@@ -166,5 +210,4 @@ class DeviceThread(Thread):
 					self.device.set_data(location, result)
 
 			# hope we don't get more than one script
-			self.device.timepoint_done.set()
 			self.device.timepoint_done.wait()
