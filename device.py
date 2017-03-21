@@ -6,20 +6,56 @@ Assignment 1
 March 2016
 """
 
-from threading import Event, Thread, Semaphore, Lock
+from threading import Event, Thread, Semaphore, Lock, Condition
 
+class MyCondition():
+	
+	def __init__(self, num_threads):
+		self.condition = Condition()
+		self.num_threads = num_threads
+		print "Numarul de threaduri este ", num_threads
+		self.current_thread = 0;
+		
+	def acquire(self):
+		self.condition.acquire()
+		self.current_thread = self.current_thread + 1
+		print "Am facut aquire ", self.current_thread
+		
+	def release(self):
+		self.condition.release()
+		self.current_thread = self.current_thread - 1
+		print "Am facut release ", self.current_thread
+		
+	def is_full(self):
+		print "In stadiul curent avem ", self.current_thread, " ", self.num_threads
+		if self.current_thread == self.num_threads:
+			print "Helllloooo "
+			return 1
+		else:
+			return 0
+			
+	def wait(self):
+		self.condition.wait()
+		
+	def notifyAll(self):
+		self.condition.notifyAll()
+			
 class ScriptThread(Thread):
 	
-	def __init__(self):
+	def __init__(self, device):
 		Thread.__init__(self)
+		self.neighbours = []
+		self.location = None
+		self.parent_device = device
+		self.script = None
 		
-	def update_data(neighbours, location, parent_device):
+	def update_data(self, neighbours, location, parent_device, script):
 		self.neighbours = neighbours
 		self.location = location
 		self.parent_device = parent_device
+		self.script = script
 		
 	def run(self):
-		self.parent_device.semaphore.acquire()
 		script_data = []
 		# collect data from current neighbours
 		for device in self.neighbours:
@@ -36,14 +72,13 @@ class ScriptThread(Thread):
 			# run script on data
 			self.parent_device.script_run.set()
 			self.parent_device.script_run.wait()
-			result = script.run(script_data)
+			result = self.script.run(script_data)
 			
 			# update data of neighbours, hope no one is updating at the same time
 			for device in self.neighbours:
 				parent_device.set_data(self.location, result)
 			# update our data, hope no one is updating at the same time
-			self.parent_device.set_data(slef.location, result)
-		self.parent_device.semaphore.release()
+			self.parent_device.set_data(self.location, result)
 		
 		
 class Device(object):
@@ -67,13 +102,20 @@ class Device(object):
 		self.sensor_data = sensor_data
 		self.supervisor = supervisor
 		self.scripts = []
+		self.num_threads = 0;
 		
 		self.script_received = Event()
 		self.script_run = Event()
-		self.scriptThreads = [ScriptThread()]*8
+		self.setup = Event()
+		self.scriptThreads = []
+		
+		for i in range(0, 8):
+			self.scriptThreads.append(ScriptThread(self))
+			self.scriptThreads[i].start()
 		self.timepoint_done = Event()
 		
-		self.semaphore = None
+		self.semaphore = Semaphore()
+		self.neighbours_condition = MyCondition(-1)
 		self.lock = Lock();
 		self.thread = DeviceThread(self)
 		self.thread.start()
@@ -95,13 +137,15 @@ class Device(object):
 		@param devices: list containing all devices
 		"""
 		# we don't need no stinkin' setup
-		self.script_received.set()
 		if self.device_id == 0:
 			self.semaphore = Semaphore(8)
-		else:
+			self.neighbours_condition = MyCondition(len(devices))
 			for device in devices:
-				device.semaphore = devices[0].semaphore
-
+				device.semaphore = self.semaphore
+				device.neighbours_condition = self.neighbours_condition
+				device.setup.set()
+				
+			self.setup.set()
 		pass
 
 	def assign_script(self, script, location):
@@ -167,47 +211,37 @@ class DeviceThread(Thread):
 		"""
 		Thread.__init__(self, name="Device Thread %d" % device.device_id)
 		self.device = device
+	
 
 	def run(self):
+		self.device.setup.wait()
 		# hope there is only one timepoint, as multiple iterations of the loop are not supported
-		print("CIneva porneste devideThread")
-		while True:
-		
-			# get the current neighbourhood
-			self.device.lock.acquire()
-			neighbours = self.device.supervisor.get_neighbours()
-			if neighbours is None:
-				break
-			self.device.lock.release()
+		while True:	
 			
-			self.device.script_received.wait()
-
+			# get the current neighbourhood
+			with self.device.lock:
+				self.device.neighbours_condition.acquire()
+				neighbours = self.device.supervisor.get_neighbours()
+				if neighbours is None:
+					break
+				res = self.device.neighbours_condition.is_full()
+			if res == 1:
+				self.device.neighbours_condition.notifyAll()
+			else:
+				self.device.neighbours_condition.wait()
+			with self.device.lock:
+					self.device.neighbours_condition.release()
+			
 			# run scripts received until now
+			
 			for (script, location) in self.device.scripts:
-				print("Avem un script")
-				script_data = []
-				# collect data from current neighbours
-				for device in neighbours:
-					data = device.get_data(location)
-					if data is not None:
-						script_data.append(data)
-				# add our data, if any
-				data = self.device.get_data(location)
-				if data is not None:
-					script_data.append(data)
-
-				if script_data != []:
-					print "Avem si date"
-					# run script on data
-					self.device.script_run.set()
-					self.device.script_run.wait()
-					result = script.run(script_data)
-					
-					# update data of neighbours, hope no one is updating at the same time
-					for device in neighbours:
-						device.set_data(location, result)
-					# update our data, hope no one is updating at the same time
-					self.device.set_data(location, result)
+				self.device.semaphore.acquire()
+				self.device.scriptThreads[self.device.num_threads].update_data(neighbours, location, self.device, script)
+				self.device.scriptThreads[self.device.num_threads].join()
+				self.device.num_threads = self.device.num_threads+1;
+				self.device.semaphore.release()
+				self.device.num_threads = self.device.num_threads-1;
+				print "Avem ", self.device.num_threads, " In mod curent"
 
 			# hope we don't get more than one script
 			self.device.timepoint_done.wait()
