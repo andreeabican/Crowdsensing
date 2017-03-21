@@ -234,13 +234,13 @@ class DeviceThread(Thread):
 					self.device.neighbours_condition.decrease_num_threads()
 					break
 				res = self.device.neighbours_condition.is_full()
-			if res == 1:
-				self.device.neighbours_condition.notifyAll()
-			else:
-				self.device.neighbours_condition.wait()
-			with self.device.lock:
-					self.device.neighbours_condition.release()
-		
+				if res == 1:
+					self.device.neighbours_condition.notifyAll()
+				else:
+					self.device.neighbours_condition.wait()				
+				self.device.neighbours_condition.release()
+				
+			self.device.timepoint_done.wait()
 			
 			# run scripts received until now
 			for (script, location) in self.device.scripts:
