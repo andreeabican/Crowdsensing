@@ -34,37 +34,8 @@ class ReusableBarrier():
             self.cond.wait()
         self.cond.release()
 
-class MyCondition():
-	
-	def __init__(self, num_threads):
-		self.condition = Condition()
-		self.num_threads = num_threads
-		self.current_thread = 0;
-		
-	def decrease_num_threads(self):
-		self.num_threads -= 1;
-	def acquire(self):
-		self.condition.acquire()
-		self.current_thread = self.current_thread + 1
-		
-	def release(self):
-		self.condition.release()
-		self.current_thread = self.current_thread - 1
-		
-	def is_full(self):
-		if self.current_thread == self.num_threads:
-			return 1
-		else:
-			return 0
-			
-	def wait(self):
-		self.condition.wait()
-		
-	def notifyAll(self):
-		self.condition.notifyAll()
-		
-			
-class ScriptThread(Thread):
+				
+class Worker(Thread):
 	
 	def __init__(self, device, neighbours, script, location):
 		Thread.__init__(self)
@@ -99,6 +70,29 @@ class ScriptThread(Thread):
 			self.parent_device.semaphore.release()
 
 		
+
+class WorkerPool(object):
+	
+	def __init__(self, workers):
+		self.workers = workers
+		self.workers_scripts = []
+		self.current_workers = 0;
+		
+	def add_worker(self, device, neighbour, script, location):
+		self.workers_scripts.append(Worker(device, neighbour, script, location))
+		self.workers_scripts[-1].start()
+		self.current_workers += 1
+		
+	
+	def start_and_join_workers(self):
+		for i in range(0, self.current_workers):
+			self.workers_scripts[i].join()
+			self.workers_scripts[i].run()
+	
+	def stop_workers(self):
+		self.workers_scripts = []
+		self.current_workers = 0
+		
 class Device(object):
 	"""
 	Class that represents a device.
@@ -127,10 +121,9 @@ class Device(object):
 		self.timepoint_done = Event()
 		self.scriptThreads = []
 		self.location_locks = []
-
+		self.worker_pool = WorkerPool(8)
 		
 		self.semaphore = Semaphore(8)
-		self.neighbours_condition = MyCondition(-1)
 		self.lock = Lock();
 		self.barrier = None;
 		self.thread = DeviceThread(self)
@@ -154,13 +147,11 @@ class Device(object):
 		"""
 		# we don't need no stinkin' setup
 		if self.device_id == 0:
-			self.neighbours_condition = MyCondition(len(devices))
 			for i in range(0, 25):
 				self.location_locks.append(Lock())
 			self.barrier = ReusableBarrier(len(devices))
 			for device in devices:
 				device.barrier = self.barrier
-				device.neighbours_condition = self.neighbours_condition
 				device.location_locks = self.location_locks
 				device.setup.set()
 
@@ -239,40 +230,21 @@ class DeviceThread(Thread):
 			# get the current neighbourhood
 			self.device.barrier.wait()	
 			with self.device.lock:
-				self.device.neighbours_condition.acquire()
 				neighbours = self.device.supervisor.get_neighbours()
 				if neighbours is None:
-					self.device.neighbours_condition.release()
-					self.device.neighbours_condition.decrease_num_threads()
-					
 					break
-				res = self.device.neighbours_condition.is_full()
-			if res == 1:
-				self.device.neighbours_condition.notifyAll()
-			else:
-				self.device.neighbours_condition.wait()
-			with self.device.lock:
-					self.device.neighbours_condition.release()
- 			
 
 			self.device.timepoint_done.wait()
 			
 			# run scripts received until now
 			for (script, location) in self.device.scripts:
 				self.device.semaphore.acquire()
-				self.device.scriptThreads.append(ScriptThread(self.device, neighbours, script, location))
-				self.device.scriptThreads[-1].start()
-				self.device.num_threads = self.device.num_threads+1;
+				self.device.worker_pool.add_worker(self.device, neighbours, script, location)
 				
 			self.device.barrier.wait()
 			
-			for i in range(0, self.device.num_threads):
-				self.device.scriptThreads[i].join()
-				self.device.scriptThreads[i].run()
-				
-			self.device.scriptThreads = []
-			
-			self.device.num_threads = 0
+			self.device.worker_pool.start_and_join_workers()
+			self.device.worker_pool.stop_workers()
 			
 			self.device.timepoint_done.clear()
 			
