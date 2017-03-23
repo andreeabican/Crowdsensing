@@ -45,7 +45,7 @@ class Worker(Thread):
 		self.script = script
 		
 	def run(self):
-		if self.script is not None:
+		while self.script is not None:
 			with self.parent_device.location_locks[self.location]:
 				script_data = []
 				# collect data from current neighbours
@@ -58,7 +58,6 @@ class Worker(Thread):
 			
 				if data is not None:
 					script_data.append(data)
-				
 			
 				if script_data != []:
 					# run script on data
@@ -66,7 +65,7 @@ class Worker(Thread):
 				
 					for device in self.neighbours:
 						device.set_data(self.location, result)
-					self.parent_device.set_data(self.location, result)
+					#self.parent_device.set_data(self.location, result)
 			self.script = None			
 			self.parent_device.semaphore.release()
 
@@ -87,9 +86,8 @@ class WorkerPool(object):
 	
 	def start_and_join_workers(self):
 		for i in range(0, self.current_workers):
-			self.workers_scripts[i].run()
 			self.workers_scripts[i].join()
-			
+			self.workers_scripts[i].run()
 	
 	def stop_workers(self):
 		self.workers_scripts = []
