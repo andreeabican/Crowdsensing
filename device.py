@@ -37,61 +37,64 @@ class ReusableBarrier():
 				
 class Worker(Thread):
 	
-	def __init__(self, device, neighbours, script, location):
+	def __init__(self, scripts_buffer, device, id):
 		Thread.__init__(self)
-		self.neighbours = neighbours
-		self.location = location
-		self.parent_device = device
-		self.script = script
+		self.device = device
+		self.script_buffer = scripts_buffer
+		self.id = id
 		
 	def run(self):
-		while self.script is not None:
-			with self.parent_device.location_locks[self.location]:
+		while True:
+			(neighbours, script, location) = self.script_buffer.get()
+			if script is None:
+				self.script_buffer.task_done()
+				break
+			with self.device.location_locks[location]:
 				script_data = []
 				# collect data from current neighbours
-				for device in self.neighbours:
-					data = device.get_data(self.location)
+				for device in neighbours:
+					data = device.get_data(location)
 					if data is not None:
 						script_data.append(data)
 				# add our data, if any
-				data = self.parent_device.get_data(self.location)
+				data = self.device.get_data(location)
 			
 				if data is not None:
 					script_data.append(data)
 			
 				if script_data != []:
 					# run script on data
-					result = self.script.run(script_data)
+					result = script.run(script_data)
 				
-					for device in self.neighbours:
-						device.set_data(self.location, result)
-					#self.parent_device.set_data(self.location, result)
-			self.script = None			
-			self.parent_device.semaphore.release()
+					for device in neighbours:
+						device.set_data(location, result)
+					self.device.set_data(location, result)
+			self.script_buffer.task_done()			
+			self.device.semaphore.release()
 
 		
 
 class WorkerPool(object):
 	
-	def __init__(self, workers):
+	def __init__(self, workers, device):
 		self.workers = workers
 		self.workers_scripts = []
-		self.current_workers = 0;
+		self.scripts_buffer = Queue.Queue()
+		for i in range(0, workers):
+			self.workers_scripts.append(Worker(self.scripts_buffer, device, i))
+			self.workers_scripts[-1].start()
 		
-	def add_worker(self, device, neighbour, script, location):
-		self.workers_scripts.append(Worker(device, neighbour, script, location))
-		self.workers_scripts[-1].start()
-		self.current_workers += 1
-		
+	def add_script(self, neighbours, script, location):
+		self.scripts_buffer.put((neighbours, script, location))
+
 	
-	def start_and_join_workers(self):
-		for i in range(0, self.current_workers):
+	def join_workers(self):
+		for i in (0, self.workers-1):
+			self.scripts_buffer.join()
 			self.workers_scripts[i].join()
-			self.workers_scripts[i].run()
-	
-	def stop_workers(self):
-		self.workers_scripts = []
-		self.current_workers = 0
+		for i in (0, self.workers-1):
+			del self.workers_scripts[-1]
+
 		
 class Device(object):
 	"""
@@ -121,7 +124,7 @@ class Device(object):
 		self.timepoint_done = Event()
 		self.scriptThreads = []
 		self.location_locks = []
-		self.worker_pool = WorkerPool(8)
+		self.worker_pool = WorkerPool(8, self)
 		
 		self.semaphore = BoundedSemaphore(8)
 		self.lock = Lock();
@@ -231,18 +234,17 @@ class DeviceThread(Thread):
 			with self.device.lock:
 				neighbours = self.device.supervisor.get_neighbours()
 				if neighbours is None:
+					for i in range(0, 8):
+						self.device.worker_pool.add_script(None, None, None)
+					self.device.worker_pool.join_workers()
 					break
-					
+			self.device.barrier.wait()
 			self.device.timepoint_done.wait()
-			
 			# run scripts received until now
 			for (script, location) in self.device.scripts:
 				self.device.semaphore.acquire()
-				self.device.worker_pool.add_worker(self.device, neighbours, script, location)
+				self.device.worker_pool.add_script(neighbours, script, location)
 				
 			self.device.barrier.wait()
-			
-			self.device.worker_pool.start_and_join_workers()
-			self.device.worker_pool.stop_workers()
 			
 			self.device.timepoint_done.clear()
