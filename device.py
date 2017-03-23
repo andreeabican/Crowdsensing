@@ -130,6 +130,7 @@ class Device(object):
 
 		
 		self.semaphore = Semaphore(8)
+		self.neighbours_condition = MyCondition(-1)
 		self.lock = Lock();
 		self.barrier = None;
 		self.thread = DeviceThread(self)
@@ -236,10 +237,23 @@ class DeviceThread(Thread):
 		# hope there is only one timepoint, as multiple iterations of the loop are not supported
 		while True:	
 			# get the current neighbourhood
+			self.device.barrier.wait()	
 			with self.device.lock:
+				self.device.neighbours_condition.acquire()
 				neighbours = self.device.supervisor.get_neighbours()
 				if neighbours is None:
+					self.device.neighbours_condition.release()
+					self.device.neighbours_condition.decrease_num_threads()
+					
 					break
+				res = self.device.neighbours_condition.is_full()
+			if res == 1:
+				self.device.neighbours_condition.notifyAll()
+			else:
+				self.device.neighbours_condition.wait()
+			with self.device.lock:
+					self.device.neighbours_condition.release()
+ 			
 
 			self.device.timepoint_done.wait()
 			
@@ -251,6 +265,7 @@ class DeviceThread(Thread):
 				self.device.num_threads = self.device.num_threads+1;
 				
 			self.device.barrier.wait()
+			
 			for i in range(0, self.device.num_threads):
 				self.device.scriptThreads[i].join()
 				self.device.scriptThreads[i].run()
@@ -260,4 +275,4 @@ class DeviceThread(Thread):
 			self.device.num_threads = 0
 			
 			self.device.timepoint_done.clear()
-			self.device.barrier.wait()	
+			
