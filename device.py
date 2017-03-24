@@ -43,37 +43,38 @@ class Worker(Thread):
 		self.script_buffer = scripts_buffer
 		self.id = id
 		
+	def get_script_data(self, job):
+		script_data = []
+		for device in job.neighbours:
+			data = device.get_data(job.location)
+			if data is not None:
+				script_data.append(data)
+		# add our data, if any
+		data = self.device.get_data(job.location)
+	
+		if data is not None:
+			script_data.append(data)
+		return script_data
+	
 	def run(self):
 		while True:
-			(neighbours, script, location) = self.script_buffer.get()
-			if script is None:
+			job = self.script_buffer.get()
+			if job.script is None:
 				self.script_buffer.task_done()
 				break
 			self.device.semaphore.acquire()
-			with self.device.location_locks[location]:
-				script_data = []
-				# collect data from current neighbours
-				for device in neighbours:
-					data = device.get_data(location)
-					if data is not None:
-						script_data.append(data)
-				# add our data, if any
-				data = self.device.get_data(location)
-			
-				if data is not None:
-					script_data.append(data)
-			
+			with self.device.location_locks[job.location]:
+				script_data = self.get_script_data(job)
+				
 				if script_data != []:
 					# run script on data
-					result = script.run(script_data)
+					result = job.script.run(script_data)
 				
-					for device in neighbours:
-						device.set_data(location, result)
-					self.device.set_data(location, result)
+					for device in job.neighbours:
+						device.set_data(job.location, result)
+					self.device.set_data(job.location, result)
 			self.script_buffer.task_done()			
 			self.device.semaphore.release()
-
-		
 
 class WorkerPool(object):
 	
@@ -88,8 +89,8 @@ class WorkerPool(object):
 			self.workers_scripts.append(Worker(self.scripts_buffer, device, i))
 			self.workers_scripts[i].start()
 			
-	def add_script(self, neighbours, script, location):
-		self.scripts_buffer.put((neighbours, script, location))
+	def add_job(self, job):
+		self.scripts_buffer.put(job)
 
 	def delete_workers(self):
 		for i in (0, self.workers-1):
@@ -102,10 +103,16 @@ class WorkerPool(object):
 			
 	def make_workers_stop(self):
 		for i in range(0, 8):
-			self.add_script(None, None, None)
+			self.add_job(Job(None, None, None))
 		self.join_workers()
 		
 
+class Job():
+	def __init__(self, neighbours, script, location):
+		self.neighbours = neighbours
+		self.script = script
+		self.location = location
+		
 		
 class Device(object):
 	"""
@@ -171,6 +178,9 @@ class Device(object):
 
 		pass
 
+	def add_job(self, workers_job):
+		self.worker_pool.add_job(workers_job)
+		
 	def assign_script(self, script, location):
 		"""
 		Provide a script for the device to execute.
@@ -252,8 +262,7 @@ class DeviceThread(Thread):
 			
 			# run scripts received until now
 			for (script, location) in self.device.scripts:
-			#	self.device.semaphore.acquire()
-				self.device.worker_pool.add_script(neighbours, script, location)
+				self.device.add_job(Job(neighbours, script, location))
 				
 			self.device.barrier.wait()
 			self.device.timepoint_done.clear()
