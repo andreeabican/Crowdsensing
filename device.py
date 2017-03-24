@@ -74,8 +74,7 @@ class Worker(Thread):
 				
 				if script_data != []:
 					# run script on data
-					result = job.script.run(script_data)
-				
+					result = job.script.run(script_data)	
 					self.update_data_on_neighbours(job, result)
 					
 			self.script_buffer.task_done()			
