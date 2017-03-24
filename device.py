@@ -55,6 +55,11 @@ class Worker(Thread):
 		if data is not None:
 			script_data.append(data)
 		return script_data
+		
+	def update_data_on_neighbours(self, job, result):
+		for device in job.neighbours:
+			device.set_data(job.location, result)
+		self.device.set_data(job.location, result)
 	
 	def run(self):
 		while True:
@@ -63,6 +68,7 @@ class Worker(Thread):
 				self.script_buffer.task_done()
 				break
 			self.device.semaphore.acquire()
+			
 			with self.device.location_locks[job.location]:
 				script_data = self.get_script_data(job)
 				
@@ -70,9 +76,8 @@ class Worker(Thread):
 					# run script on data
 					result = job.script.run(script_data)
 				
-					for device in job.neighbours:
-						device.set_data(job.location, result)
-					self.device.set_data(job.location, result)
+					self.update_data_on_neighbours(job, result)
+					
 			self.script_buffer.task_done()			
 			self.device.semaphore.release()
 
@@ -135,9 +140,7 @@ class Device(object):
 		self.sensor_data = sensor_data
 		self.supervisor = supervisor
 		self.scripts = []
-		self.num_threads = 0;
 		
-		self.script_received = Event()
 		self.setup = Event()
 		self.timepoint_done = Event()
 		self.scriptThreads = []
@@ -194,7 +197,6 @@ class Device(object):
 		"""
 		if script is not None:
 			self.scripts.append((script, location))
-			self.script_received.set()
 		else:
 			self.timepoint_done.set()
 
