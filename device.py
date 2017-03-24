@@ -49,6 +49,7 @@ class Worker(Thread):
 			if script is None:
 				self.script_buffer.task_done()
 				break
+			self.device.semaphore.acquire()
 			with self.device.location_locks[location]:
 				script_data = []
 				# collect data from current neighbours
@@ -80,20 +81,30 @@ class WorkerPool(object):
 		self.workers = workers
 		self.workers_scripts = []
 		self.scripts_buffer = Queue.Queue()
-		for i in range(0, workers):
-			self.workers_scripts.append(Worker(self.scripts_buffer, device, i))
-			self.workers_scripts[-1].start()
+		self.start_workers(device)
 		
+	def start_workers(self, device):
+		for i in range(0, self.workers):
+			self.workers_scripts.append(Worker(self.scripts_buffer, device, i))
+			self.workers_scripts[i].start()
+			
 	def add_script(self, neighbours, script, location):
 		self.scripts_buffer.put((neighbours, script, location))
 
-	
+	def delete_workers(self):
+		for i in (0, self.workers-1):
+			del self.workers_scripts[-1]
+			
 	def join_workers(self):
 		for i in (0, self.workers-1):
 			self.scripts_buffer.join()
 			self.workers_scripts[i].join()
-		for i in (0, self.workers-1):
-			del self.workers_scripts[-1]
+			
+	def make_workers_stop(self):
+		for i in range(0, 8):
+			self.add_script(None, None, None)
+		self.join_workers()
+		
 
 		
 class Device(object):
@@ -228,23 +239,21 @@ class DeviceThread(Thread):
 
 	def run(self):
 		self.device.setup.wait()
-		# hope there is only one timepoint, as multiple iterations of the loop are not supported
 		while True:	
 			# get the current neighbourhood
 			with self.device.lock:
 				neighbours = self.device.supervisor.get_neighbours()
 				if neighbours is None:
-					for i in range(0, 8):
-						self.device.worker_pool.add_script(None, None, None)
-					self.device.worker_pool.join_workers()
+					self.device.worker_pool.make_workers_stop()
 					break
+					
 			self.device.barrier.wait()
 			self.device.timepoint_done.wait()
+			
 			# run scripts received until now
 			for (script, location) in self.device.scripts:
-				self.device.semaphore.acquire()
+			#	self.device.semaphore.acquire()
 				self.device.worker_pool.add_script(neighbours, script, location)
 				
 			self.device.barrier.wait()
-			
 			self.device.timepoint_done.clear()
