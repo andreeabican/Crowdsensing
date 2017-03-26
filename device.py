@@ -26,7 +26,7 @@ class ReusableBarrier():
         """
         Wait method
         """
-        self.cond.acquire()
+        self.acquire()
         self.count_threads -= 1
         if self.count_threads == 0:
             self.cond.notify_all()
@@ -34,6 +34,12 @@ class ReusableBarrier():
         else:
             self.cond.wait()
         self.cond.release()
+        
+    def acquire(self):
+        """
+        Acquire condition
+        """
+        self.cond.acquire()
 
                 
 class Worker(Thread):
@@ -216,37 +222,76 @@ class DeviceSync(object):
     Class that contains syncronization elements for a device
     """
     def __init__(self):
+        """
+        Constructor.
+        """
         self.setup = Event()
-        self.timepoint_done = Event()
+        self.scripts_received = Event()
         self.location_locks = []
         self.barrier = None
         
     def init_location_locks(self, locations):
+        """
+        Initialize list of locks per locations
+        
+        @type locations: Integer
+        @param locations: number of locations
+        """
         for _ in range(0, locations):
             self.location_locks.append(Lock())
             
     def init_barrier(self, threads):
+        """
+        Initialize reusable barrier
+        
+        @type threads: Integer
+        @param threads: Number of threads that the barrier is waiting for
+        """
         self.barrier = ReusableBarrier(threads)
         
     def set_setup_event(self):
+        """
+        Sets the setup event
+        """
         self.setup.set()
         
     def wait_setup_event(self):
+        """
+        Waits until the setup event is set
+        """
         self.setup.wait()
         
-    def set_timepoint_done(self):
-        self.timepoint_done.set()
+    def set_scripts_received(self):
+        """
+        Set event when device received scripts
+        """
+        self.scripts_received.set()
         
-    def wait_timepoint_done(self):
-        self.timepoint_done.wait()
+    def wait_scripts_received(self):
+        """
+        Waits until scripts are received
+        """
+        self.scripts_received.wait()
         
-    def clear_timepoint_done(self):
-        self.timepoint_done.clear()
+    def clear_scripts_received(self):
+        """
+        Clear event when there are no more scripts
+        """
+        self.scripts_received.clear()
         
     def wait_threads(self):
+        """
+        Wait threads to hit the barrier
+        """
         self.barrier.wait()
         
     def get_location_lock(self, location):
+        """
+        Get lock of a location
+        
+        @type location: Integer
+        @param location: Index in the location_locks list
+        """
         return self.location_locks[location]
         
 class Device(object):
@@ -321,7 +366,7 @@ class Device(object):
         if script is not None:
             self.scripts.append((script, location))
         else:
-            self.sync.set_timepoint_done()
+            self.sync.set_scripts_received()
 
     def get_data(self, location):
         """
@@ -388,7 +433,7 @@ class DeviceThread(Thread):
             
             # wait for all device threads to get neighbours
             self.device.sync.wait_threads()
-            self.device.sync.wait_timepoint_done()
+            self.device.sync.wait_scripts_received()
             
             # add the scripts receives in current device's worker pool
             for (script, location) in self.device.scripts:
@@ -396,4 +441,4 @@ class DeviceThread(Thread):
             
             # wait for all devices threads to run scripts
             self.device.sync.wait_threads()
-            self.device.sync.clear_timepoint_done()
+            self.device.sync.clear_scripts_received()
